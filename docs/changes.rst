@@ -1,6 +1,21 @@
 Changes
 =======
 
+Version 1.7.33
+--------------
+
+* Added a new :func:`petl.transform.asofjoin.asofjoin` transformation
+  for joining a table of samples (or events) against a table of
+  versioned configurations, matching, for each row of the left table,
+  the row of the right table with the same key and the latest
+  effective time not later than the sample time. Composite keys and
+  configuration validity periods are supported, ties on ``(key, time)``
+  are resolved to the last row of the original input, and the original
+  order of the left table is preserved. Already sorted tables are
+  joined in a single streaming pass with constant memory, while
+  unordered and read-once data are handled within limited memory via
+  external sorting, with temporary resources cleaned up on close.
+
 Version 1.7.32
 --------------
 
