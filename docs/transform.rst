@@ -184,6 +184,80 @@ Set operations
 .. autofunction:: petl.transform.setops.hashintersection
 
 
+.. module:: petl.transform.threemerge
+.. _transform_threemerge:
+
+Three-way merge
+---------------
+
+Reconcile a common ancestor table with two independently edited copies
+(e.g. the purchasing and operations versions of the same product master
+data). Non-conflicting field edits are combined automatically; additions,
+deletions, conflicting edits and duplicate keys are reported in a detail
+table that can be exported for review, and the reviewed decisions can then
+be applied to produce a complete, conflict-free result.
+
+A typical workflow is::
+
+    import petl as etl
+    from petl.transform.threemerge import CONFLICT
+
+    # base is the shared product master; left/right are the two edited copies
+    with etl.threemerge(base, left, right, key='product_id',
+                        buffersize=100000, tempdir='/tmp/spool') as tm:
+
+        # keep the auto-merged working copy ...
+        etl.tocsv(tm.merged, 'merged.csv')
+
+        # ... and export every detected change for manual review
+        etl.tocsv(tm.changes, 'changes.csv')
+
+        # after review, annotate the conflicts with a resolution column and
+        # apply them. Resolutions built in-memory match the original typed
+        # key values directly, e.g.::
+        decisions = {(1, 'price'): 'right', (2, None): 'left'}
+        etl.tocsv(tm.resolve(decisions), 'final.csv')
+
+When the review happens outside Python (e.g. a spreadsheet), note that
+exporting and re-importing through CSV turns every value into a string.
+Build the resolved result from tables read back from CSV so the key types
+match::
+
+    base_csv = etl.fromcsv('base.csv')
+    left_csv = etl.fromcsv('left.csv')
+    right_csv = etl.fromcsv('right.csv')
+    review = etl.fromcsv('changes_reviewed.csv')
+    decisions = etl.select(
+        review, lambda r: r.resolution != '').cut('product_id', 'field',
+                                                  'resolution')
+    final = etl.threemerge(
+        base_csv, left_csv, right_csv, key='product_id').resolve(decisions)
+
+A :class:`~petl.transform.threemerge.ThreeWayMerge` can also be used as a
+context manager, which calls :meth:`~petl.transform.threemerge.ThreeWayMerge.close`
+on exit. Inputs are externally sorted and streamed, so tables larger than
+memory are supported and each input is only read through the sort spool.
+
+.. autofunction:: petl.transform.threemerge.threemerge
+.. autoclass:: petl.transform.threemerge.ThreeWayMerge
+    :members: merged, changes, resolve, close
+.. autoclass:: petl.transform.threemerge.MergeConflict
+    :members:
+.. autofunction:: petl.transform.threemerge.resolve
+
+Change and side constants used in the detail table:
+
+- :data:`petl.transform.threemerge.ADDED`
+- :data:`petl.transform.threemerge.DELETED`
+- :data:`petl.transform.threemerge.MODIFIED`
+- :data:`petl.transform.threemerge.CONFLICT`
+- :data:`petl.transform.threemerge.DUPLICATE`
+- :data:`petl.transform.threemerge.BASE`
+- :data:`petl.transform.threemerge.LEFT`
+- :data:`petl.transform.threemerge.RIGHT`
+- :data:`petl.transform.threemerge.BOTH`
+
+
 .. module:: petl.transform.dedup
 .. _transform_dedup:
 

@@ -57,3 +57,6 @@ from petl.transform.intervals import intervaljoin, intervalleftjoin, \
 from petl.transform.validation import validate
 
 from petl.transform.standardize import standardize
+
+from petl.transform.threemerge import threemerge, resolve, MergeConflict, \
+    ADDED, DELETED, MODIFIED, CONFLICT, DUPLICATE, BASE, LEFT, RIGHT, BOTH

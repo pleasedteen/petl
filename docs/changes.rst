@@ -4,6 +4,16 @@ Changes
 Version 1.7.32
 --------------
 
+* Add a three-way merge (``threemerge()``) for reconciling a common
+  ancestor table with two independently edited copies. Non-conflicting
+  field edits are merged automatically, while additions, deletions,
+  conflicting edits and duplicate keys are reported in an exportable
+  change-detail table. The companion ``resolve()`` applies reviewed
+  decisions to produce a complete, conflict-free result. Inputs are
+  externally sorted and streamed so tables larger than memory are
+  supported, with explicit spool resource management via ``close()`` or
+  context-manager use.
+
 * Give each ``randomtable()`` iterator an independent random generator so
   interleaved iterations and unrelated random calls preserve seeded output
   without changing Python's global random state.
