@@ -13,6 +13,8 @@ from petl.transform.conversions import convert, convertall, replace, \
 
 from petl.transform.sorts import sort, mergesort, issorted
 
+from petl.transform.window import groupwindow
+
 from petl.transform.selects import select, selectop, selectcontains, \
     selecteq, selectfalse, selectge, selectgt, selectin, selectis, \
     selectisinstance, selectisnot, selectle, selectlt, selectne, selectnone, \

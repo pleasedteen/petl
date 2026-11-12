@@ -215,6 +215,15 @@ Reducing rows (aggregation)
 .. autofunction:: petl.transform.reductions.groupselectmax
 
 
+.. module:: petl.transform.window
+.. _transform_window:
+
+Window functions
+----------------
+
+.. autofunction:: petl.transform.window.groupwindow
+
+
 .. module:: petl.transform.reshape
 .. _transform_reshape:
 

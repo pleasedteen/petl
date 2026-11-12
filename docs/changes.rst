@@ -4,6 +4,13 @@ Changes
 Version 1.7.32
 --------------
 
+* Add a new function ``groupwindow()`` to compute window functions over
+  groups of rows: rank (with gaps after ties), the value of the previous
+  row within the group, and a sliding window sum with configurable numbers
+  of preceding and following rows. Rows are restored to the original input
+  order, the input is read exactly once per iteration, and groups larger
+  than memory are supported.
+
 * Give each ``randomtable()`` iterator an independent random generator so
   interleaved iterations and unrelated random calls preserve seeded output
   without changing Python's global random state.
