@@ -9,12 +9,14 @@ from petl.compat import next, text_type, string_types
 
 # internal dependencies
 from petl.errors import ArgumentError
+from petl.comparison import Comparable
 from petl.util.base import Table
 from petl.io.db_utils import _is_dbapi_connection, _is_dbapi_cursor, \
     _is_sqlalchemy_connection, _is_sqlalchemy_engine, _is_sqlalchemy_session, \
     _is_clikchouse_dbapi_connection, _quote, _placeholders, \
     _execute_sqlalchemy, _sqlalchemy_transaction
 from petl.io.db_create import drop_table, create_table
+from petl.transform.history import _mergeversions
 
 
 logger = logging.getLogger(__name__)
@@ -742,3 +744,434 @@ def appenddb(table, dbo, tablename, schema=None, commit=True):
 
 
 Table.appenddb = appenddb
+
+
+def historydb(table, dbo, tablename, key, time=None, fromfield='valid_from',
+              tofield='valid_to', schema=None, commit=True):
+    """
+    Maintain a dimension history (a.k.a. slowly changing dimension type 2)
+    in an existing database table by applying a table of change events.
+    E.g.::
+
+        >>> import petl as etl
+        >>> import sqlite3
+        >>> connection = sqlite3.connect('example.db')
+        >>> # assuming table "people" already exists in the database with
+        >>> # columns id, name, valid_from and valid_to
+        >>> events = [['id', 'name', 'valid_from'],
+        ...           [1, 'foo', 1],
+        ...           [1, 'bar', 3],
+        ...           [2, 'baz', 2]]
+        >>> etl.historydb(events, connection, 'people', key='id')
+        >>> etl.look(etl.fromdb(connection,
+        ...                     'select * from people order by id, valid_from'))
+        +----+-------+------------+----------+
+        | id | name  | valid_from | valid_to |
+        +====+=======+============+==========+
+        |  1 | 'foo' |          1 |        3 |
+        +----+-------+------------+----------+
+        |  1 | 'bar' |          3 | None     |
+        +----+-------+------------+----------+
+        |  2 | 'baz' |          2 | None     |
+        +----+-------+------------+----------+
+
+    The database table holds one row per version of a business key, with the
+    version validity stored as a left-closed right-open interval in the
+    `fromfield` (inclusive) and `tofield` (exclusive) columns. The `table`
+    argument provides change events, one row per observed attribute set,
+    with the business key field(s) given by `key`, the attribute fields and
+    a field holding the time each event takes effect (named by `time`,
+    defaulting to the value of `fromfield`).
+
+    Events are applied per business key, following the semantics of
+    :func:`petl.transform.history.applyhistory`:
+
+    * An event whose time matches the start of an existing version corrects
+      that version in place ("same-time correction").
+    * An event whose time falls between existing versions is backfilled as a
+      new version, regardless of whether it arrives out of chronological
+      order.
+    * An event that restates the attributes already recorded as in effect at
+      its time is a duplicate and does not create a new version.
+    * After merging, the validity intervals of the key are recomputed so
+      that each version is valid until the next version starts, and the last
+      version is open-ended (`tofield` is `None`). Adjacent versions with
+      identical attributes are collapsed.
+
+    The database table must already exist, with columns for the key
+    field(s), the attribute fields and the two validity interval fields.
+    The attribute fields are taken from the database table; the events table
+    must provide fields of the same name and may carry additional fields,
+    which are ignored. Only keys present in the events are touched, all
+    other rows are left unchanged.
+
+    All keys of a batch are updated within a single transaction: if applying
+    the events fails for any key, the transaction is rolled back and the
+    previously recorded history of all keys is preserved. Pass
+    ``commit=False`` to leave transaction control to the caller, as with
+    :func:`petl.io.db.todb`.
+
+    The events table is read exactly once, so it may be a one-shot iterator.
+    The `dbo` argument may be a DB-API 2.0 connection or cursor, a callable
+    returning a DB-API 2.0 cursor, an SQLAlchemy engine, connection or
+    session, or a string, in which case it is interpreted as the name of a
+    file containing an :mod:`sqlite3` database. Connections, cursors and
+    sessions supplied by the caller are left open.
+
+    """
+
+    needs_closing = False
+
+    # convenience for working with sqlite3
+    if isinstance(dbo, string_types):
+        import sqlite3
+        dbo = sqlite3.connect(dbo)
+        needs_closing = True
+
+    try:
+        _historydb(table, dbo, tablename, key=key, time=time,
+                   fromfield=fromfield, tofield=tofield, schema=schema,
+                   commit=commit)
+
+    finally:
+        if needs_closing:
+            dbo.close()
+
+
+Table.historydb = historydb
+
+
+def _historydb(table, dbo, tablename, key=None, time=None,
+               fromfield='valid_from', tofield='valid_to', schema=None,
+               commit=True):
+
+    # need to deal with polymorphic dbo argument
+    # what sort of duck is it?
+
+    # does it quack like a standard DB-API 2.0 connection?
+    if _is_dbapi_connection(dbo):
+        debug('assuming %r is standard DB-API 2.0 connection', dbo)
+        _historydb_dbapi_connection(table, dbo, tablename, key=key, time=time,
+                                    fromfield=fromfield, tofield=tofield,
+                                    schema=schema, commit=commit)
+
+    # does it quack like a standard DB-API 2.0 cursor?
+    elif _is_dbapi_cursor(dbo):
+        debug('assuming %r is standard DB-API 2.0 cursor')
+        _historydb_dbapi_cursor(table, dbo, tablename, key=key, time=time,
+                                fromfield=fromfield, tofield=tofield,
+                                schema=schema, commit=commit)
+
+    # does it quack like an SQLAlchemy engine?
+    elif _is_sqlalchemy_engine(dbo):
+        debug('assuming %r instance of sqlalchemy.engine.base.Engine', dbo)
+        with dbo.connect() as connection:
+            _historydb_sqlalchemy_connection(table, connection, tablename,
+                                             key=key, time=time,
+                                             fromfield=fromfield,
+                                             tofield=tofield, schema=schema,
+                                             commit=commit)
+
+    # does it quack like an SQLAlchemy session?
+    elif _is_sqlalchemy_session(dbo):
+        debug('assuming %r instance of sqlalchemy.orm.session.Session', dbo)
+        with _sqlalchemy_transaction(dbo, commit):
+            _historydb_sqlalchemy_connection(table, dbo.connection(),
+                                             tablename, key=key, time=time,
+                                             fromfield=fromfield,
+                                             tofield=tofield, schema=schema,
+                                             commit=False)
+
+    # does it quack like an SQLAlchemy connection?
+    elif _is_sqlalchemy_connection(dbo):
+        debug('assuming %r instance of sqlalchemy.engine.base.Connection',
+              dbo)
+        _historydb_sqlalchemy_connection(table, dbo, tablename, key=key,
+                                         time=time, fromfield=fromfield,
+                                         tofield=tofield, schema=schema,
+                                         commit=commit)
+
+    elif callable(dbo):
+        debug('assuming %r is a function returning standard DB-API 2.0 '
+              'cursor objects', dbo)
+        _historydb_dbapi_mkcurs(table, dbo, tablename, key=key, time=time,
+                                fromfield=fromfield, tofield=tofield,
+                                schema=schema, commit=commit)
+
+    # some other sort of duck...
+    else:
+        raise ArgumentError('unsupported database object type: %r' % dbo)
+
+
+SQL_SELECT_COLUMNS_QUERY = 'SELECT * FROM %s WHERE 1=0'
+SQL_SELECT_VERSIONS_QUERY = 'SELECT %s FROM %s WHERE %s'
+SQL_DELETE_VERSIONS_QUERY = 'DELETE FROM %s WHERE %s'
+
+
+class _DbapiHistoryWriter(object):
+    # execute the statements of a history update via DB-API 2.0
+
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def columns(self, tablename):
+        self.cursor.execute(SQL_SELECT_COLUMNS_QUERY % tablename)
+        return [d[0] for d in self.cursor.description]
+
+    def select(self, query, params):
+        self.cursor.execute(query, params)
+        return [tuple(row) for row in self.cursor.fetchall()]
+
+    def delete(self, query, params):
+        self.cursor.execute(query, params)
+
+    def insert(self, query, rows):
+        self.cursor.executemany(query, rows)
+
+
+class _SQLAlchemyHistoryWriter(object):
+    # execute the statements of a history update via SQLAlchemy
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def columns(self, tablename):
+        result = _execute_sqlalchemy(self.connection,
+                                     SQL_SELECT_COLUMNS_QUERY % tablename)
+        try:
+            return list(result.keys())
+        finally:
+            result.close()
+
+    def select(self, query, params):
+        result = _execute_sqlalchemy(self.connection, query, params)
+        try:
+            return [tuple(row) for row in result]
+        finally:
+            result.close()
+
+    def delete(self, query, params):
+        _execute_sqlalchemy(self.connection, query, params).close()
+
+    def insert(self, query, rows):
+        for row in rows:
+            _execute_sqlalchemy(self.connection, query, tuple(row)).close()
+
+
+def _applyhistorydb(table, writer, paramstyle_connection, tablename, key,
+                    time, fromfield, tofield, schema):
+
+    # normalise the key to a tuple of field names
+    if not isinstance(key, (list, tuple)):
+        key = (key,)
+    key = tuple(key)
+
+    # sanitise table name
+    tablename = _quote(tablename)
+    if schema is not None:
+        tablename = _quote(schema) + '.' + tablename
+    debug('tablename: %r', tablename)
+
+    # discover the columns of the database table
+    dbcols = list(writer.columns(tablename))
+    debug('table columns: %r', dbcols)
+
+    # determine the attribute fields from the database table
+    for name in key + (fromfield, tofield):
+        if name not in dbcols:
+            raise ArgumentError('field %r not found in database table %r, '
+                                'columns are %r' % (name, tablename, dbcols))
+    attrs = [c for c in dbcols
+             if c not in key and c != fromfield and c != tofield]
+    debug('attribute fields: %r', attrs)
+
+    # read the events table exactly once, grouping events per business key
+    if time is None:
+        time = fromfield
+    it = iter(table)
+    try:
+        hdr = next(it)
+    except StopIteration:
+        debug('no events, nothing to do')
+        return
+    eflds = list(map(text_type, hdr))
+    for name in key + (time,) + tuple(attrs):
+        if name not in eflds:
+            raise ArgumentError('field %r not found in the events table, '
+                                'fields are %r' % (name, eflds))
+    ekindices = [eflds.index(name) for name in key]
+    etindex = eflds.index(time)
+    eaindices = [eflds.index(name) for name in attrs]
+    groups = dict()
+    order = list()
+    for row in it:
+        k = tuple(row[i] for i in ekindices)
+        if k not in groups:
+            groups[k] = list()
+            order.append(k)
+        groups[k].append((row[etindex],
+                          tuple(row[i] for i in eaindices)))
+
+    # prepare the statements
+    colnames = [_quote(c) for c in dbcols]
+    insertcolnames = ', '.join(colnames)
+    placeholders = _placeholders(paramstyle_connection, dbcols)
+    insertquery = SQL_INSERT_QUERY % (tablename, insertcolnames, placeholders)
+    keycolnames = [_quote(k) for k in key]
+    keyplaceholders = _placeholders(paramstyle_connection, key).split(', ')
+    whereclause = ' AND '.join(
+        '%s = %s' % pair for pair in zip(keycolnames, keyplaceholders))
+    selectquery = SQL_SELECT_VERSIONS_QUERY % (insertcolnames, tablename,
+                                               whereclause)
+    deletequery = SQL_DELETE_VERSIONS_QUERY % (tablename, whereclause)
+    debug('select versions via query %r', selectquery)
+    debug('delete versions via query %r', deletequery)
+    debug('insert versions via query %r', insertquery)
+
+    # column positions within a database row
+    dbfrom = dbcols.index(fromfield)
+    dbattrs = [dbcols.index(a) for a in attrs]
+    keypos = dict((c, i) for i, c in enumerate(key))
+    attrpos = dict((c, i) for i, c in enumerate(attrs))
+
+    # apply the events of each key within the caller's transaction
+    for k in order:
+        existing_rows = writer.select(selectquery, k)
+        existing = [(row[dbfrom], tuple(row[i] for i in dbattrs))
+                    for row in existing_rows]
+        merged = _mergeversions(existing, groups[k])
+        # build the revised version rows in database column order,
+        # recomputing the left-closed right-open validity intervals
+        rows = list()
+        n = len(merged)
+        for i, (valid_from, avals) in enumerate(merged):
+            valid_to = merged[i + 1][0] if i + 1 < n else None
+            row = list()
+            for c in dbcols:
+                if c in keypos:
+                    row.append(k[keypos[c]])
+                elif c == fromfield:
+                    row.append(valid_from)
+                elif c == tofield:
+                    row.append(valid_to)
+                else:
+                    row.append(avals[attrpos[c]])
+            rows.append(tuple(row))
+        # skip the rewrite if nothing changed, e.g., all events were
+        # duplicates of the recorded history
+        current = sorted(existing_rows,
+                         key=lambda row: Comparable(row[dbfrom]))
+        if rows == current:
+            debug('history of key %r unchanged, skipping', k)
+            continue
+        debug('replace %r versions of key %r with %r versions',
+              len(existing_rows), k, len(rows))
+        writer.delete(deletequery, k)
+        writer.insert(insertquery, rows)
+
+
+def _historydb_dbapi_connection(table, connection, tablename, key=None,
+                                time=None, fromfield='valid_from',
+                                tofield='valid_to', schema=None, commit=True):
+
+    cursor = connection.cursor()
+    load_failed = True
+    try:
+        try:
+            _applyhistorydb(table, _DbapiHistoryWriter(cursor), connection,
+                            tablename, key, time, fromfield, tofield, schema)
+            load_failed = False
+        except Exception:
+            if commit:
+                # roll back so the previously recorded history is preserved
+                debug('roll back transaction after failed history update')
+                connection.rollback()
+            raise
+    finally:
+        debug('close the cursor')
+        _close_load_cursor(cursor, load_failed)
+
+    if commit:
+        debug('commit transaction')
+        connection.commit()
+
+
+def _historydb_dbapi_cursor(table, cursor, tablename, key=None, time=None,
+                            fromfield='valid_from', tofield='valid_to',
+                            schema=None, commit=True):
+
+    debug('obtain connection via cursor')
+    # N.B., we depend on this optional DB-API 2.0 attribute being implemented
+    assert hasattr(cursor, 'connection'), \
+        'could not obtain connection via cursor'
+    connection = cursor.connection
+
+    try:
+        _applyhistorydb(table, _DbapiHistoryWriter(cursor), connection,
+                        tablename, key, time, fromfield, tofield, schema)
+    except Exception:
+        if commit:
+            # roll back so the previously recorded history is preserved
+            debug('roll back transaction after failed history update')
+            connection.rollback()
+        raise
+
+    # N.B., don't close the cursor, leave that to the application
+
+    if commit:
+        debug('commit transaction')
+        connection.commit()
+
+
+def _historydb_dbapi_mkcurs(table, mkcurs, tablename, key=None, time=None,
+                            fromfield='valid_from', tofield='valid_to',
+                            schema=None, commit=True):
+
+    debug('obtain cursor and connection')
+    cursor = mkcurs()
+    # N.B., we depend on this optional DB-API 2.0 attribute being implemented
+    assert hasattr(cursor, 'connection'), \
+        'could not obtain connection via cursor'
+    connection = cursor.connection
+
+    load_failed = True
+    try:
+        try:
+            _applyhistorydb(table, _DbapiHistoryWriter(cursor), connection,
+                            tablename, key, time, fromfield, tofield, schema)
+            load_failed = False
+        except Exception:
+            if commit:
+                # roll back so the previously recorded history is preserved
+                debug('roll back transaction after failed history update')
+                connection.rollback()
+            raise
+    finally:
+        _close_load_cursor(cursor, load_failed)
+
+    if commit:
+        debug('commit transaction')
+        connection.commit()
+
+
+def _historydb_sqlalchemy_connection(table, connection, tablename, key=None,
+                                     time=None, fromfield='valid_from',
+                                     tofield='valid_to', schema=None,
+                                     commit=True):
+
+    debug('connection: %r', connection)
+
+    # N.B., we need to obtain a reference to the underlying DB-API connection
+    # so we can import the module and determine the paramstyle
+    proxied_raw_connection = connection.connection
+    if hasattr(proxied_raw_connection, 'driver_connection'):
+        actual_raw_connection = proxied_raw_connection.driver_connection
+    else:
+        actual_raw_connection = proxied_raw_connection.connection
+
+    with _sqlalchemy_transaction(connection, commit):
+        _applyhistorydb(table, _SQLAlchemyHistoryWriter(connection),
+                        actual_raw_connection, tablename, key, time,
+                        fromfield, tofield, schema)
+
+    # N.B., don't close connection, leave that to the application

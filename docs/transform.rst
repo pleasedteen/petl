@@ -197,6 +197,15 @@ Deduplicating rows
 .. autofunction:: petl.transform.dedup.isunique
 
 
+.. module:: petl.transform.history
+.. _transform_history:
+
+Maintaining dimension history
+-----------------------------
+
+.. autofunction:: petl.transform.history.applyhistory
+
+
 .. module:: petl.transform.reductions
 .. _transform_reductions:
 

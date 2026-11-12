@@ -21,7 +21,7 @@ from petl.io.markdown import tomarkdown
 
 from petl.io.json import fromjson, tojson, tojsonarrays, fromdicts
 
-from petl.io.db import fromdb, todb, appenddb
+from petl.io.db import fromdb, todb, appenddb, historydb
 
 from petl.io.xls import fromxls, toxls
 

@@ -167,3 +167,80 @@ def test_sqlalchemy_commit_true_existing_connection_transaction(engine):
         else:
             assert not transaction.is_active
             assert rows(engine) == table[1:]
+
+
+def dimrows(engine):
+    with engine.connect() as connection:
+        return [tuple(row) for row in connection.execute(sa.text(
+            'SELECT id, name, valid_from, valid_to FROM dim '
+            'ORDER BY id, valid_from'))]
+
+
+@pytest.fixture()
+def dimtable(engine):
+    with engine.begin() as connection:
+        connection.execute(sa.text(
+            'CREATE TABLE dim (id INTEGER, name TEXT, '
+            'valid_from INTEGER, valid_to INTEGER)'))
+
+
+def test_sqlalchemy_historydb(dbo, engine, dimtable):
+    events = [('id', 'name', 'valid_from'),
+              (1, 'foo', 1),
+              (1, 'bar', 3),
+              (2, 'baz', 2)]
+    etl.historydb(events, dbo, 'dim', key='id')
+    assert dimrows(engine) == [(1, 'foo', 1, 3),
+                               (1, 'bar', 3, None),
+                               (2, 'baz', 2, None)]
+
+    # out-of-order backfill, same-time correction and duplicate events
+    etl.historydb([events[0],
+                   (1, 'qux', 2),
+                   (1, 'quux', 3),
+                   (2, 'baz', 5)],
+                  dbo, 'dim', key='id')
+    assert dimrows(engine) == [(1, 'foo', 1, 2),
+                               (1, 'qux', 2, 3),
+                               (1, 'quux', 3, None),
+                               (2, 'baz', 2, None)]
+
+
+def test_sqlalchemy_historydb_failed_batch_preserves_history(dbo, engine):
+    with engine.begin() as connection:
+        connection.execute(sa.text(
+            'CREATE TABLE dim (id INTEGER, name TEXT NOT NULL, '
+            'valid_from INTEGER, valid_to INTEGER)'))
+    etl.historydb([('id', 'name', 'valid_from'),
+                   (1, 'foo', 1),
+                   (2, 'baz', 2)],
+                  dbo, 'dim', key='id')
+    before = dimrows(engine)
+    with pytest.raises(sa.exc.IntegrityError):
+        etl.historydb([('id', 'name', 'valid_from'),
+                       (1, 'bar', 3),
+                       (2, None, 4)],
+                      dbo, 'dim', key='id')
+    assert dimrows(engine) == before
+    # the database object is still usable after the failed batch
+    etl.historydb([('id', 'name', 'valid_from'), (1, 'bar', 3)],
+                  dbo, 'dim', key='id')
+    assert dimrows(engine) == [(1, 'foo', 1, 3),
+                               (1, 'bar', 3, None),
+                               (2, 'baz', 2, None)]
+
+
+def test_sqlalchemy_historydb_commit_false(engine, dimtable):
+    with engine.connect() as connection:
+        etl.historydb([('id', 'name', 'valid_from'), (1, 'foo', 1)],
+                      connection, 'dim', key='id', commit=False)
+        assert dimrows(engine) == []
+        connection.commit()
+        assert dimrows(engine) == [(1, 'foo', 1, None)]
+
+
+def test_sqlalchemy_historydb_owned_connections_are_returned(engine, dimtable):
+    etl.historydb([('id', 'name', 'valid_from'), (1, 'foo', 1)],
+                  engine, 'dim', key='id')
+    assert engine.pool.checkedout() == 0
+    assert dimrows(engine) == [(1, 'foo', 1, None)]

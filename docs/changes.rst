@@ -4,6 +4,19 @@ Changes
 Version 1.7.32
 --------------
 
+* Add dimension history maintenance (slowly changing dimension type 2):
+  the new :func:`petl.transform.history.applyhistory` transformation merges
+  change events into a history table, and the new
+  :func:`petl.io.db.historydb` function applies change events to a dimension
+  table in a database via DB-API 2.0 or SQLAlchemy. Events are applied per
+  business key with out-of-order backfill and same-time correction,
+  duplicate events do not create new versions, and the left-closed
+  right-open validity intervals are recomputed. Each batch of keys is
+  updated within a single transaction, so a failed batch preserves the
+  previously recorded history, caller-supplied connections remain open, and
+  the events table is read exactly once.
+  By :user:`wynneyin`.
+
 * Use PETL's mixed-type ordering for variable names discovered by
   ``recast()``, allowing tables with mixed-type headers to be melted and
   recast without a comparison error.

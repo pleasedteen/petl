@@ -467,6 +467,7 @@ any connection it opened. Supplied connections and sessions remain open.
 .. autofunction:: petl.io.db.fromdb
 .. autofunction:: petl.io.db.todb
 .. autofunction:: petl.io.db.appenddb
+.. autofunction:: petl.io.db.historydb
 
 .. module:: petl.io.remote
 .. _io_remotes:

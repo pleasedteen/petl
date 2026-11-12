@@ -32,6 +32,8 @@ from petl.transform.reductions import rowreduce, mergeduplicates,\
 
 from petl.transform.fills import filldown, fillright, fillleft
 
+from petl.transform.history import applyhistory
+
 from petl.transform.regex import capture, split, search, searchcomplement, \
     sub, splitdown
 
