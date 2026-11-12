@@ -2,6 +2,7 @@
 import io
 import csv
 import logging
+from contextlib import contextmanager
 
 
 from petl.util.base import Table, data
@@ -58,6 +59,19 @@ def _writecsv(table, source, mode, write_header, encoding, errors, **csvargs):
             writer = csv.writer(csvfile, **csvargs)
             for row in rows:
                 writer.writerow(row)
+            csvfile.flush()
+        finally:
+            csvfile.detach()
+
+
+@contextmanager
+def open_csv_writer(source, mode, encoding, errors, **csvargs):
+    """Context manager yielding a :class:`csv.writer` backed by `source`."""
+    with source.open(mode) as buf:
+        csvfile = io.TextIOWrapper(buf, encoding=encoding, errors=errors,
+                                   newline='')
+        try:
+            yield csv.writer(csvfile, **csvargs)
             csvfile.flush()
         finally:
             csvfile.detach()

@@ -5,6 +5,7 @@ from __future__ import absolute_import, print_function, division
 # standard library dependencies
 import csv
 import cStringIO
+from contextlib import contextmanager
 
 
 # internal dependencies
@@ -76,6 +77,23 @@ def _writecsv(table, source, mode, write_header, encoding, errors, **csvargs):
 
         for row in rows:
             writer.writerow(row)
+
+
+@contextmanager
+def open_csv_writer(source, mode, encoding, errors, **csvargs):
+    """Context manager yielding a :class:`csv.writer` backed by `source`."""
+    # determine encoding
+    codec = getcodec(encoding)
+
+    with source.open(mode) as buf:
+        # ascii
+        if codec.name == 'ascii':
+            # bypass encoding
+            yield csv.writer(buf, **csvargs)
+        # non-ascii
+        else:
+            yield UnicodeWriter(buf, encoding=encoding, errors=errors,
+                                **csvargs)
 
 
 def teecsv_impl(table, source, **kwargs):

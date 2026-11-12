@@ -99,6 +99,7 @@ Delimited files
 .. autofunction:: petl.io.csv.totsv
 .. autofunction:: petl.io.csv.appendtsv
 .. autofunction:: petl.io.csv.teetsv
+.. autofunction:: petl.io.csv_partition.tocsvpartitioned
 
 
 .. module:: petl.io.pickle

@@ -4,6 +4,14 @@ Changes
 Version 1.7.32
 --------------
 
+* Add ``tocsvpartitioned()`` to export a table into a directory of CSV files,
+  one file per distinct composite key, with a manifest recording each key,
+  file name and row count. The input is read once, memory and open files are
+  bounded, output is published atomically with cleanup on failure, existing
+  targets are rejected, and key values (including ``None``, empty strings and
+  numeric vs. string keys) remain distinguishable through type-prefixed,
+  path-safe file names and JSON-encoded manifest entries.
+
 * Give each ``randomtable()`` iterator an independent random generator so
   interleaved iterations and unrelated random calls preserve seeded output
   without changing Python's global random state.
